@@ -1,90 +1,61 @@
-import requests
-import json
-import time
+from flask import Flask, request, jsonify
 import google.generativeai as genai
+import os
 
-# ============ CONFIGURATION ============
-GEMINI_API_KEY = "AIzaSyB7WqxNXvOr8IGxd_RnsaWjyl_3vt6hSw0"  # Yaha apni key daal
-YOUR_TRAINING_API = "https://peru-cat-625876.hostingersite.com/api/training/"
+app = Flask(__name__)
 
-# Gemini setup
+# Gemini API Key from environment (Render pe set kar dena)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY environment variable not set!")
+
 genai.configure(api_key=GEMINI_API_KEY)
 
-# ============ STEP 1: Fetch Training Data from Your API ============
-print("Fetching training data from your API...")
-response = requests.get(YOUR_TRAINING_API)
-
-if response.status_code != 200:
-    print("Error fetching data:", response.text)
-    exit()
-
-data = response.json()
-print(f"Fetched {len(data)} chat logs")
-
-# Expected format: [{"question": "Rohu ko kitna feed dena chahiye?", "answer": "Din mein 2-3% body weight..."}]
-# Agar format alag hai to adjust kar lena
-
-# ============ STEP 2: Prepare Data for Gemini Fine-Tuning ============
-training_examples = []
-for item in data:
-    if 'question' in item and 'answer' in item:
-        training_examples.append({
-            "messages": [
-                {"role": "user", "content": item['question']},
-                {"role": "model", "content": item['answer']}
-            ]
-        })
-
-if len(training_examples) < 100:
-    print("Warning: Kam data hai (<100). Fine-tuning ke liye 100+ examples best hain.")
-else:
-    print(f"Prepared {len(training_examples)} examples for fine-tuning")
-
-# Save locally (optional backup)
-with open('training_data.jsonl', 'w', encoding='utf-8') as f:
-    for ex in training_examples:
-        f.write(json.dumps(ex, ensure_ascii=False) + '\n')
-print("Training data saved as training_data.jsonl")
-
-# ============ STEP 3: Upload to Gemini & Start Fine-Tuning ============
-print("Uploading data to Gemini...")
-
-# Upload file
-uploaded_file = genai.upload_file(path="training_data.jsonl", display_name="MatsyaSaarthi_Training_Data")
-print(f"Uploaded file ID: {uploaded_file.name}")
-
-# Create tuned model
-print("Starting fine-tuning... (yeh 30 minutes to 4 hours lag sakta hai)")
-operation = genai.create_tuned_model(
-    source_model="gemini-1.5-flash",
-    training_data=uploaded_file,
-    id="matsyasaarthi-custom-v1",  # Tera model name
-    display_name="Matsya Saarthi Custom Model",
-    epoch_count=4,
-    batch_size=4,
-    learning_rate=0.001,
+# Use Gemini 1.5 Flash (fast + free tier mein best)
+# Future mein fine-tuned model daal dena yaha
+model = genai.GenerativeModel(
+    'gemini-1.5-flash',
+    system_instruction="""
+    You are Matsya Saarthi, a helpful and friendly AI assistant for Indian fish farmers.
+    Answer in simple Hindi or Hinglish.
+    Focus on: fish diseases, feeding schedule, pond management, oxygen level, water quality, subsidies, biofloc, RAS, Rohu, Catla, Tilapia, Pangasius etc.
+    Be practical, short, and give actionable tips.
+    """
 )
 
-# Wait for completion
-for status in operation.wait_bar():
-    time.sleep(30)  # Thoda delay
+@app.route('/')
+def home():
+    return jsonify({
+        "message": "Matsya Saarthi Chatbot API Live! 🐟",
+        "endpoints": {
+            "POST /ask": "Send {'question': 'your message'} to get reply"
+        }
+    })
 
-print("Fine-tuning completed!")
+@app.route('/ask', methods=['POST'])
+def ask():
+    try:
+        data = request.get_json()
+        if not data or 'question' not in data:
+            return jsonify({'error': 'Missing "question" in request'}), 400
 
-tuned_model = operation.result
-print(f"Tuned model name: {tuned_model.name}")
+        user_question = data['question'].strip()
+        if not user_question:
+            return jsonify({'error': 'Question cannot be empty'}), 400
 
-# ============ STEP 4: Use Your Custom Model in App ============
-print("\nAb tere app mein yeh code use kar:")
-print(f"""
-model = genai.GenerativeModel('{tuned_model.name}')
-response = model.generate_content("Rohu fish ko disease hai kya karu?")
-print(response.text)
-""")
+        # Generate response
+        response = model.generate_content(user_question)
+        answer = response.text.strip()
 
-print("\nYa PHP mein curl se:")
-print(f"""
-curl "https://generativelanguage.googleapis.com/v1beta/models/{tuned_model.name}:generateContent?key=$GEMINI_API_KEY" \\
--H "Content-Type: application/json" \\
--d '{{"contents":[{{"role":"user","parts":[{{"text":"pond mein oxygen kam hai kya karu"}}]}}]}}'
-""")
+        return jsonify({
+            'question': user_question,
+            'answer': answer
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# For Render.com - important port binding
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
